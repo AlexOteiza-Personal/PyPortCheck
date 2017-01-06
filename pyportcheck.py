@@ -6,6 +6,13 @@ import time
 
 PUBLIC_IP_SERVICES = ["http://api.ipify.org"]
 
+client_connection_end = threading.Lock()
+already_in_use = False
+connected_to_server = False
+
+"""
+Obtains the current public ip using the public ip services from above
+"""
 def obtain_public_ip():
     my_ip = None
     for ip_service in PUBLIC_IP_SERVICES:
@@ -16,20 +23,37 @@ def obtain_public_ip():
             continue
     return my_ip
 
+"""
+Runs TCP or UPD server in the specified port
+"""
 def run_server(port, protocol):
     sock_type = None
+    global connected_to_server
+    global already_in_use
     print "Starting {0} server 0.0.0.0:{1}".format(protocol, port)
     if protocol == "TCP":
         sock_type = socket.SOCK_STREAM
         serversocket = socket.socket(socket.AF_INET, sock_type)
-        serversocket.bind(("0.0.0.0", port))
-        serversocket.settimeout(3)
+        try:
+            serversocket.bind(("0.0.0.0", port))
+        except Exception:
+            already_in_use = True
+            return
+        serversocket.settimeout(5)
         serversocket.listen(1)
         try:
             (clientsocket, address) = serversocket.accept()
+            client_connection_end.acquire()
+            client_connection_end.release()
             print "Recieved connection from {0[0]}:{0[1]}".format(address)
-        except socket.timeout:
-            pass
+            print "Port {0} {1} is OPEN!".format(port, protocol)
+        except socket.timeout as ex:
+            client_connection_end.acquire()
+            client_connection_end.release()
+            if connected_to_server:
+                print "Port {0} {1} looks OPEN, but it's not forwarded to this machine".format(port, protocol)
+            else:
+                print "Port {0} {1} is NOT OPEN".format(port, protocol)
         serversocket.close()
     elif protocol == "UDP":
         sock_type = socket.SOCK_DGRAM
@@ -41,36 +65,47 @@ def run_server(port, protocol):
             time.sleep(1)
             if data == "HELLO PORT":
                 print "UDP packet succesfuly recieved, port {0} {1} is OPEN!".format(port, protocol)
-            else: # This shouldn't ever happen
-                print "UDP packet recieved with different data ???"
+            else: # We might recieve data from other client. Not what we are looking for, but it means the port is open
+                print "UDP packet recieved from other client, port is OPEN"
         except socket.timeout:
             print "UDP server timed out, port {0} {1} is likely NOT OPEN or not reachable".format(port, protocol)    
         serversocket.close()
     print "Shutting down {0} server".format(protocol)
 
+"""
+Prints if the port is open or not
+"""
 def check_open_port(ip, port, protocol):
+    global connected_to_server
+    global already_in_use
+    client_connection_end.acquire()
     server_thread = threading.Thread(target=run_server, args=(port, protocol))
     server_thread.start()
     # Give time to start server
-    time.sleep(1)
-    sock_type = None
+    time.sleep(2)
+    if already_in_use:
+        print "Couldn't check port {0} {1}, the port is already in use".format(protocol, port)
+        return
+    
     if protocol == "TCP":
         print "Creating TCP socket connection to {0}:{1}".format(ip, port)
         clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            clientsocket.connect((public_ip, port))
+            clientsocket.settimeout(10)
+            clientsocket.connect((ip, port))
             time.sleep(0.2)
             clientsocket.close()
-            print "Port {0} {1} is OPEN!".format(port, protocol)
-        except Exception:
-            print "Port {0} {1} is NOT OPEN".format(port, protocol)
-            
+            print "Connected..."
+            connected_to_server = True
+        except socket.error as ex:
+            print "Couldn't connect to {0}:{1}".format(ip, port)
     elif protocol == "UDP":
         print "Sending UDP packet to {0}:{1}".format(ip, port)
         clientsocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         clientsocket.sendto("HELLO PORT", (ip, port))
         print "Waiting UDP packet to reach..."
 
+    client_connection_end.release()
     server_thread.join()
 
 
@@ -84,5 +119,3 @@ if __name__ == '__main__':
     public_ip = obtain_public_ip()
     print "Public IP: {0}".format(public_ip)
     check_open_port(public_ip, port, protocol)
-
-
