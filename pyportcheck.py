@@ -6,9 +6,8 @@ import time
 
 PUBLIC_IP_SERVICES = ["http://api.ipify.org"]
 
-client_connection_end = threading.Lock()
-already_in_use = False
-connected_to_server = False
+client_lock = threading.Lock()
+shared_data = {"port_in_use" : False, "connected_to_server" : False}
 
 """
 Obtains the current public ip using the public ip services from above
@@ -28,8 +27,7 @@ Runs TCP or UPD server in the specified port
 """
 def run_server(port, protocol):
     sock_type = None
-    global connected_to_server
-    global already_in_use
+    global shared_data
     print "Starting {0} server 0.0.0.0:{1}".format(protocol, port)
     if protocol == "TCP":
         sock_type = socket.SOCK_STREAM
@@ -37,20 +35,20 @@ def run_server(port, protocol):
         try:
             serversocket.bind(("0.0.0.0", port))
         except Exception:
-            already_in_use = True
+            shared_data["port_in_use"] = True
             return
         serversocket.settimeout(5)
         serversocket.listen(1)
         try:
             (clientsocket, address) = serversocket.accept()
-            client_connection_end.acquire()
-            client_connection_end.release()
+            client_lock.acquire()
+            client_lock.release()
             print "Recieved connection from {0[0]}:{0[1]}".format(address)
             print "Port {0} {1} is OPEN!".format(port, protocol)
         except socket.timeout as ex:
-            client_connection_end.acquire()
-            client_connection_end.release()
-            if connected_to_server:
+            client_lock.acquire()
+            client_lock.release()
+            if shared_data["connected_to_server"]:
                 print "Port {0} {1} looks OPEN, but it's not forwarded to this machine".format(port, protocol)
             else:
                 print "Port {0} {1} is NOT OPEN".format(port, protocol)
@@ -76,14 +74,14 @@ def run_server(port, protocol):
 Prints if the port is open or not
 """
 def check_open_port(ip, port, protocol):
-    global connected_to_server
-    global already_in_use
-    client_connection_end.acquire()
+    global shared_data
+    # Lock until the connection is terminated
+    client_lock.acquire()
     server_thread = threading.Thread(target=run_server, args=(port, protocol))
     server_thread.start()
     # Give time to start server
     time.sleep(2)
-    if already_in_use:
+    if shared_data["port_in_use"]:
         print "Couldn't check port {0} {1}, the port is already in use".format(protocol, port)
         return
     
@@ -96,7 +94,7 @@ def check_open_port(ip, port, protocol):
             time.sleep(0.2)
             clientsocket.close()
             print "Connected..."
-            connected_to_server = True
+            shared_data["connected_to_server"] = True
         except socket.error as ex:
             print "Couldn't connect to {0}:{1}".format(ip, port)
     elif protocol == "UDP":
@@ -105,17 +103,15 @@ def check_open_port(ip, port, protocol):
         clientsocket.sendto("HELLO PORT", (ip, port))
         print "Waiting UDP packet to reach..."
 
-    client_connection_end.release()
+    client_lock.release()
     server_thread.join()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("port", metavar="port", type=int, help="Port to check")
-    parser.add_argument("protocol", metavar="protocol", type=str, choices=["TCP", "UDP"], help="Protocol, either TCP or UDP")
+    parser.add_argument("protocol", metavar="protocol", type=str.upper, choices=["TCP", "UDP"], help="Protocol, either TCP or UDP")
     args = parser.parse_args()
-    port = args.port
-    protocol = args.protocol
     public_ip = obtain_public_ip()
     print "Public IP: {0}".format(public_ip)
-    check_open_port(public_ip, port, protocol)
+    check_open_port(public_ip, args.port, args.protocol)
